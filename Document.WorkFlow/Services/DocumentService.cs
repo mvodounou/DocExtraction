@@ -5,43 +5,51 @@ using Document.WorkFlow.Context;
 using Document.WorkFlow.Contracts;
 using Document.WorkFlow.Models;
 using Microsoft.EntityFrameworkCore;
+using Newtonsoft.Json;
 
 namespace Document.WorkFlow.Services
 {
     public class DocumentService : IDocumentService
     {
         private readonly PurchaseOrderContext _dbContext;
+        private readonly MongoDBService _mongoDBService;
 
-        public DocumentService()
+        public DocumentService(MongoDBSettings mongoDBSettings)
         {
-            _dbContext = new PurchaseOrderContext();
+            mongoDBSettings = new MongoDBSettings { ConnectionURI = "mongodb+srv://docUser:1234Nero@cluster0.aq0js.mongodb.net/?retryWrites=true&w=majority", CollectionName = "documents", DatabaseName = "doc" };
+            _mongoDBService = new MongoDBService(mongoDBSettings);
         }
 
-        public void ExtractData<R>(List<string> filePaths, out IEnumerable<R>? extractedData)
+        public DocumentService(PurchaseOrderContext dbContext)
+        {
+            _dbContext = dbContext;
+        }
+
+        public void ExtractData<R>(string filePaths, out IEnumerable<R>? extractedData, out List<string> badRecord)
         {
             if (filePaths is null || !filePaths.Any())
                 throw new Exception("File path(s) cannot be empty");
 
+            var badData = new List<string>(); ;
+            var missingfields = new List<string>(); ;
+
             IEnumerable<R>? tempDataCollection = null;
             try
             {
-                filePaths.ForEach(filePath =>
+
+                var reader = new StreamReader(path: filePaths);
+                var config = new CsvHelper.Configuration.CsvConfiguration(CultureInfo.InvariantCulture)
                 {
-                    if (!Path.GetExtension(filePath).Equals(".csv"))
-                    {
-                        throw new Exception("File type not supported.");
-                    }
-
-                    var reader = new StreamReader(path: filePath);
-
-                    var config = new CsvHelper.Configuration.CsvConfiguration(CultureInfo.InvariantCulture) { BadDataFound = null };
-                    var csvDochelper = new CsvReader(reader, config);
-
-                    tempDataCollection = csvDochelper.GetRecords<R>();
-
-                });
+                    BadDataFound = arg => badData.Add(arg.Context.Parser.RawRecord),
+                    MissingFieldFound = arg => missingfields.Add(arg.Context.Parser.RawRecord)
+                };
+                using (var csv = new CsvReader(reader, config))
+                {
+                    tempDataCollection = csv.GetRecords<R>().ToList();
+                }
 
                 extractedData = tempDataCollection;
+                badRecord = badData;
             }
             catch (Exception)
             {
@@ -49,7 +57,7 @@ namespace Document.WorkFlow.Services
             }
             finally
             {
-                //tempDataCollection = null;
+
             }
         }
 
@@ -65,10 +73,22 @@ namespace Document.WorkFlow.Services
                 var _tempDataCollection = new List<PurchaseOrder>(DataCollection);
                 if (_tempDataCollection is null || !_tempDataCollection.Any())
                     return false;
-
-                await _dbContext.PurchaseOrders.AddRangeAsync(DataCollection);
-                _tempDataCollection = null;
-                return _dbContext.SaveChanges() <= 0 ? false : true;
+                if (_dbContext != null && _tempDataCollection != null)
+                {
+                    await _dbContext.PurchaseOrders.AddRangeAsync(DataCollection);
+                    _tempDataCollection = null;
+                    return _dbContext.SaveChanges() <= 0 ? false : true;
+                }
+                else if (_mongoDBService != null && _tempDataCollection != null)
+                {
+                    await _mongoDBService.CreateAsync(_tempDataCollection);
+                    _tempDataCollection = null;
+                    return true;
+                }
+                else
+                {
+                    return false;
+                }
             }
             catch (Exception ex)
             {
@@ -84,9 +104,23 @@ namespace Document.WorkFlow.Services
                 if (_tempDataCollection is null || !_tempDataCollection.Any())
                     return false;
 
-                await _dbContext.PurchaseOrderLines.AddRangeAsync(DataCollection);
-                _tempDataCollection = null;
-                return _dbContext.SaveChanges() <= 0 ? false : true;
+                if (_dbContext != null && _tempDataCollection != null)
+                {
+                    await _dbContext.PurchaseOrderLines.AddRangeAsync(DataCollection);
+                    _tempDataCollection = null;
+                    return _dbContext.SaveChanges() <= 0 ? false : true;
+                }
+                else if (_mongoDBService != null && _tempDataCollection != null)
+                {
+                    await _mongoDBService.CreateAsync(_tempDataCollection);
+                    _tempDataCollection = null;
+                    return true;
+                }
+                else
+                {
+                    return false;
+                }
+
             }
             catch (Exception ex)
             {
@@ -98,14 +132,26 @@ namespace Document.WorkFlow.Services
         {
             try
             {
-
                 var _tempDataCollection = new List<Supplier>(DataCollection);
                 if (_tempDataCollection is null || !_tempDataCollection.Any())
                     return false;
+                if (_dbContext != null && _tempDataCollection != null)
+                {
+                    await _dbContext.Suppliers.AddRangeAsync(DataCollection);
+                    _tempDataCollection = null;
+                    return _dbContext.SaveChanges() <= 0 ? false : true;
 
-                await _dbContext.Suppliers.AddRangeAsync(DataCollection);
-                _tempDataCollection = null;
-                return _dbContext.SaveChanges() <= 0 ? false : true;
+                }
+                else if (_mongoDBService != null && _tempDataCollection != null)
+                {
+                    await _mongoDBService.CreateAsync(_tempDataCollection);
+                    _tempDataCollection = null;
+                    return true;
+                }
+                else
+                {
+                    return false;
+                }
             }
             catch (Exception ex)
             {
@@ -120,11 +166,25 @@ namespace Document.WorkFlow.Services
                 var _tempDataCollection = new List<Supplier>(DataCollection);
                 if (_tempDataCollection is null || !_tempDataCollection.Any())
                     return false;
+                if (_dbContext != null)
+                {
+                    await _dbContext.Suppliers.AddRangeAsync(DataCollection);
+                    var res = _dbContext.SaveChanges();
+                    _tempDataCollection = null;
+                    return res <= 0 ? false : true;
 
-                await _dbContext.Suppliers.AddRangeAsync(DataCollection);
-                _tempDataCollection = null;
-                var res = _dbContext.SaveChanges();
-                return res <= 0 ? false : true;
+                }
+                else if (_mongoDBService != null)
+                {
+                    await _mongoDBService.CreateAsync(_tempDataCollection);
+                    _tempDataCollection = null;
+                    return true;
+                }
+                else
+                {
+                    return false;
+                }
+
             }
             catch (Exception ex)
             {
